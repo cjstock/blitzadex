@@ -7,7 +7,7 @@ edition = "2021"
 anyhow = "1.0.93"
 chrono = { version = "0.4.38", features = ["serde"] }
 chrono-tz = { version = "0.10.0", features = ["serde"] }
-dirs = "5.0.1"
+directories = "5.0.1"
 rayon = "1.10.0"
 reqwest = { version = "0.12.9", features = ["json"] }
 serde = { version = "1.0.215", features = ["derive"] }
