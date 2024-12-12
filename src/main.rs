@@ -1,9 +1,15 @@
 mod cdragon;
 
-use cdragon::CDragon;
+use cdragon::{CDragon, PluginName};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let _res = CDragon::all_champions().await?;
+    let mut cdrag = CDragon::new()?;
+    let status = cdrag.status(PluginName::RcpBeLolGameData).await?;
+    dbg!(status);
+
+    let _ = cdrag.update().await?;
+    let status = cdrag.status(PluginName::RcpBeLolGameData).await?;
+    dbg!(status);
     Ok(())
 }

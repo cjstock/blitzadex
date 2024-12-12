@@ -8,7 +8,7 @@ use std::{
 
 use anyhow::{anyhow, Context};
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use strum::Display;
 use tokio::task::JoinHandle;
@@ -38,7 +38,7 @@ pub struct CDragon {
 impl CDragon {
     pub fn new() -> anyhow::Result<Self> {
         let proj_dirs = directories::ProjectDirs::from("", "", "blitzadex")
-            .with_context(|| "failed to find your ")
+            .with_context(|| "failed to find the project directory")
             .unwrap();
         Ok(Self {
             status: Status::Uninitialized,
@@ -48,6 +48,13 @@ impl CDragon {
             config_dir: proj_dirs.config_dir().into(),
             ..Default::default()
         })
+    }
+
+    pub fn clean_up(&self) -> anyhow::Result<()> {
+        fs::remove_dir_all(&self.cache_dir).ok();
+        fs::remove_dir_all(&self.data_dir).ok();
+        fs::remove_dir_all(&self.config_dir).ok();
+        Ok(())
     }
 
     async fn cached_plugin_updated_date(&self, name: &PluginName) -> Option<DateTime<Utc>> {
@@ -273,6 +280,78 @@ struct PlaystyleInfo {
 
 #[derive(Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub enum Rarity {
+    KEpic,
+    KLegendary,
+    KMythic,
+    #[default]
+    KNoRarity,
+    KRare,
+    KTranscendent,
+    KUltimate,
+    KExalted,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub enum SkinType {
+    Ultimate,
+    #[default]
+    #[serde(other)]
+    None,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Skin {
+    id: u64,
+    is_base: bool,
+    name: String,
+    splash_path: String,
+    uncentered_splash_path: String,
+    tile_path: String,
+    load_screen_path: String,
+    skin_type: SkinType,
+    rarity: Rarity,
+    is_legacy: bool,
+    #[serde(deserialize_with = "desarialize_skin_lines")]
+    skin_lines: Option<Vec<u64>>,
+    description: Option<String>,
+}
+
+fn desarialize_skin_lines<'de, D>(deserializer: D) -> Result<Option<Vec<u64>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let it = serde_json::Value::deserialize(deserializer)?;
+    let array = it.as_array();
+    if array.is_none() {
+        return Ok(None);
+    }
+    let res = array
+        .unwrap()
+        .iter()
+        .map(|j_struct| {
+            j_struct
+                .as_object()
+                .unwrap()
+                .get("id")
+                .unwrap()
+                .as_u64()
+                .unwrap()
+        })
+        .collect::<Vec<u64>>();
+    Ok(Some(res))
+}
+
+#[derive(Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct SkinLine {
+    id: u64,
+    name: String,
+    description: String,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct Champion {
     id: u64,
     name: String,
@@ -282,10 +361,8 @@ pub struct Champion {
     tactical_info: TactialInfo,
     playstyle_info: PlaystyleInfo,
     square_portrait_path: String,
-    stinger_sfx_path: String,
-    choose_vo_path: String,
-    ban_vo_path: String,
     roles: Vec<String>,
+    skins: Vec<Skin>,
 }
 
 #[derive(Debug, Display, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -444,6 +521,20 @@ mod test {
     async fn update() -> anyhow::Result<()> {
         let mut cdrag = CDragon::new()?;
         cdrag.update().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cleanup() -> anyhow::Result<()> {
+        let cdrag = CDragon::new()?;
+        cdrag.clean_up()?;
+        let cache_exists = cdrag.cache_dir.try_exists().unwrap_or(false);
+        assert!(!cache_exists);
+        let config_exists = cdrag.config_dir.try_exists().unwrap_or(false);
+        assert!(!config_exists);
+        let data_exists = cdrag.data_dir.try_exists().unwrap_or(false);
+        assert!(!data_exists);
+
         Ok(())
     }
 }
