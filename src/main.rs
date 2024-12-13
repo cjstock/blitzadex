@@ -4,7 +4,7 @@ use cdragon::{CDragon, PluginName};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let mut cdrag = CDragon::new()?;
+    let mut cdrag = CDragon::new().await?;
     let status = cdrag.status(PluginName::RcpBeLolGameData).await?;
     dbg!(status);
 

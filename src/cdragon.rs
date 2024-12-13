@@ -14,7 +14,9 @@ use strum::Display;
 use tokio::task::JoinHandle;
 
 const GAME_DATA_URL: &str =
-    "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1";
+    "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default";
+const V1: &str = "v1";
+const ASSETS: &str = "assets";
 
 #[derive(Debug, Default, Display)]
 pub enum Status {
@@ -190,7 +192,7 @@ impl CDragon {
         &self,
         name: &PluginName,
     ) -> anyhow::Result<DateTime<Utc>> {
-        let plugins = self.plugins().await?;
+        let plugins = self.fetch_plugins().await?;
         plugins
             .iter()
             .find_map(|plug| {
@@ -203,10 +205,10 @@ impl CDragon {
             .ok_or(anyhow!("couldn't find the when {name:?} was last updated"))
     }
 
-    pub async fn champion_ids(&self) -> anyhow::Result<Vec<u64>> {
+    pub async fn fetch_champion_ids(&self) -> anyhow::Result<Vec<u64>> {
         let res = self
             .http_client
-            .get(format!("{GAME_DATA_URL}/champion-summary.json"))
+            .get(format!("{GAME_DATA_URL}/{V1}/champion-summary.json"))
             .send()
             .await?
             .text()
@@ -220,10 +222,10 @@ impl CDragon {
         Ok(champ_ids)
     }
 
-    pub async fn champion(&self, id: u64) -> anyhow::Result<Champion> {
+    pub async fn fetch_champion(&self, id: u64) -> anyhow::Result<Champion> {
         let res = self
             .http_client
-            .get(format!("{GAME_DATA_URL}/champions/{id}.json"))
+            .get(format!("{GAME_DATA_URL}/{V1}/champions/{id}.json"))
             .send()
             .await?
             .text()
@@ -232,9 +234,12 @@ impl CDragon {
         Ok(champion)
     }
 
-    async fn champion_parallel(http_client: reqwest::Client, id: u64) -> anyhow::Result<Champion> {
+    async fn fetch_champion_parallel(
+        http_client: reqwest::Client,
+        id: u64,
+    ) -> anyhow::Result<Champion> {
         let res = http_client
-            .get(format!("{GAME_DATA_URL}/champions/{id}.json"))
+            .get(format!("{GAME_DATA_URL}/{V1}/champions/{id}.json"))
             .send()
             .await?
             .text()
@@ -243,12 +248,12 @@ impl CDragon {
         Ok(champion)
     }
 
-    pub async fn all_champions(&self) -> anyhow::Result<HashMap<u64, Champion>> {
-        let champ_ids = self.champion_ids().await?;
+    pub async fn fetch_all_champions(&self) -> anyhow::Result<HashMap<u64, Champion>> {
+        let champ_ids = self.fetch_champion_ids().await?;
         let mut tasks: Vec<JoinHandle<_>> = Vec::with_capacity(champ_ids.len());
         for id in champ_ids {
             let client = self.http_client.clone();
-            let task = tokio::spawn(Self::champion_parallel(client, id));
+            let task = tokio::spawn(Self::fetch_champion_parallel(client, id));
             tasks.push(task);
         }
         let mut champions = HashMap::with_capacity(tasks.len());
@@ -300,47 +305,91 @@ pub enum SkinType {
     None,
 }
 
+/// The information and asset paths for a [`Skin`]
+///
+///
+/// [`splash_path`] - [Normalized Path] to the splash art centered on the skin
+/// [`uncentered_splash_path`] - [Normalized Path] to normal splash art for the skin. May overlap
+/// with splash arts for skins in the same [`skin_lines`] because a single splash art includes all
+/// of the champions.
+/// tile_path
+/// load_screen_path
+///
+/// ## [Normalized Path]
+/// Paths returned by the Cdragon api's json cannot be used to directly navigate to an asset. To
+/// [Normalize] this path we strip the first two path parts and cast to lowercase.
+///
+/// This normalization will allow us to construct the actual path to the asset by doing the following:
+/// ```
+/// let cdragon = CDragon::new().await.unwrap();
+/// let akshan_skin_splash = cdragon.champions
+/// format!("{GAME_DATA_URL}/{ASSETS}/")
+/// ```
+///
+/// For example:
+///     From the Cdragon json:
+///     /lol-game-data/assets/**ASSETS**/Characters/Akshan/Skins/Base/Images/akshan_splash_uncentered_0.jpg
+///
+///     The path to the actual asset:
+///     https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/assets/characters/akshan/skins/base/images/akshan_splash_uncentered_0.jpg
+///
+///     [Normalized Path]:
+///     assets/characters/akshan/skins/base/images/akshan_splash_uncentered_0.jpg
+///
+///
 #[derive(Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Skin {
     id: u64,
     is_base: bool,
     name: String,
+    #[serde(deserialize_with = "deserialize_asset_path")]
     splash_path: String,
+    #[serde(deserialize_with = "deserialize_asset_path")]
     uncentered_splash_path: String,
+    #[serde(deserialize_with = "deserialize_asset_path")]
     tile_path: String,
+    #[serde(deserialize_with = "deserialize_asset_path")]
     load_screen_path: String,
     skin_type: SkinType,
     rarity: Rarity,
     is_legacy: bool,
-    #[serde(deserialize_with = "desarialize_skin_lines")]
-    skin_lines: Option<Vec<u64>>,
+    #[serde(deserialize_with = "deserialize_skin_lines")]
+    skin_lines: Vec<u64>,
     description: Option<String>,
 }
 
-fn desarialize_skin_lines<'de, D>(deserializer: D) -> Result<Option<Vec<u64>>, D::Error>
+fn deserialize_asset_path<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
 {
-    let it = serde_json::Value::deserialize(deserializer)?;
-    let array = it.as_array();
-    if array.is_none() {
-        return Ok(None);
+    let path = String::deserialize(deserializer)?
+        .replace("/lol-game-data/assets/ASSETS", ASSETS)
+        .to_lowercase();
+    Ok(path)
+}
+
+fn deserialize_skin_lines<'de, D>(deserializer: D) -> Result<Vec<u64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let mut res = vec![];
+    let value = serde_json::Value::deserialize(deserializer)?;
+    if value.to_string() == "null" {
+        return Ok(res);
     }
-    let res = array
-        .unwrap()
-        .iter()
-        .map(|j_struct| {
-            j_struct
-                .as_object()
-                .unwrap()
-                .get("id")
-                .unwrap()
-                .as_u64()
-                .unwrap()
-        })
-        .collect::<Vec<u64>>();
-    Ok(Some(res))
+    // TODO: I don't love these errors, but I haven't quite figured out how to properly map them.
+    for j_struct in value.as_array().unwrap() {
+        let v = j_struct
+            .as_object()
+            .ok_or(serde::de::Error::custom("that's not an object"))?
+            .get("id")
+            .ok_or(serde::de::Error::missing_field("id"))?
+            .as_u64()
+            .ok_or(serde::de::Error::custom("that's not a u64"))?;
+        res.push(v);
+    }
+    Ok(res)
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -475,7 +524,7 @@ mod test {
 
     #[tokio::test]
     async fn get_plugs() {
-        let res = CDragon::default().plugins().await;
+        let res = CDragon::default().fetch_plugins().await;
         assert!(res.is_ok_and(|plugins| plugins
             .iter()
             .find(|plugin| plugin.name == PluginName::RcpBeLolGameData)
@@ -484,19 +533,19 @@ mod test {
 
     #[tokio::test]
     async fn get_champ_ids() {
-        let res = CDragon::default().champion_ids().await;
+        let res = CDragon::default().fetch_champion_ids().await;
         assert!(res.is_ok_and(|ids| ids.len() > 0))
     }
 
     #[tokio::test]
     async fn annie() {
-        let res = CDragon::default().champion(1).await;
+        let res = CDragon::default().fetch_champion(1).await;
         assert!(res.is_ok_and(|annie| annie.name == "Annie" && annie.playstyle_info.damage == 3))
     }
 
     #[tokio::test]
     async fn champs_out_of_date() -> anyhow::Result<()> {
-        let plugins = CDragon::default().plugins().await?;
+        let plugins = CDragon::default().fetch_plugins().await?;
         let champs_plugin = plugins
             .iter()
             .find(|plugin| plugin.name == PluginName::RcpBeLolGameData)
@@ -512,21 +561,21 @@ mod test {
 
     #[tokio::test]
     async fn all_champs() -> anyhow::Result<()> {
-        let champions = CDragon::default().all_champions().await?;
+        let champions = CDragon::default().fetch_all_champions().await?;
         assert!(champions.len() > 0);
         Ok(())
     }
 
     #[tokio::test]
     async fn update() -> anyhow::Result<()> {
-        let mut cdrag = CDragon::new()?;
+        let mut cdrag = CDragon::new().await?;
         cdrag.update().await?;
         Ok(())
     }
 
     #[tokio::test]
     async fn cleanup() -> anyhow::Result<()> {
-        let cdrag = CDragon::new()?;
+        let cdrag = CDragon::new().await?;
         cdrag.clean_up()?;
         let cache_exists = cdrag.cache_dir.try_exists().unwrap_or(false);
         assert!(!cache_exists);
