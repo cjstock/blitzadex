@@ -26,6 +26,21 @@ pub enum Status {
     UpToDate,
 }
 
+#[derive(Debug, Display)]
+enum CacheFile {
+    Plugins,
+    Champions,
+}
+
+impl Into<String> for CacheFile {
+    fn into(self) -> String {
+        match self {
+            Self::Plugins => "plugins.json".to_string(),
+            Self::Champions => "champions.json".to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct CDragon {
     http_client: reqwest::Client,
@@ -38,18 +53,35 @@ pub struct CDragon {
 }
 
 impl CDragon {
-    pub fn new() -> anyhow::Result<Self> {
+    pub async fn new() -> anyhow::Result<Self> {
         let proj_dirs = directories::ProjectDirs::from("", "", "blitzadex")
             .with_context(|| "failed to find the project directory")
             .unwrap();
-        Ok(Self {
+        let cache_dir = proj_dirs.cache_dir().to_path_buf();
+        let data_dir = proj_dirs.data_dir().to_path_buf();
+        let config_dir = proj_dirs.config_dir().to_path_buf();
+        let mut cdrag = Self {
             status: Status::Uninitialized,
             http_client: reqwest::Client::new(),
-            cache_dir: proj_dirs.cache_dir().into(),
-            data_dir: proj_dirs.data_dir().into(),
-            config_dir: proj_dirs.config_dir().into(),
+            cache_dir,
+            data_dir,
+            config_dir,
             ..Default::default()
-        })
+        };
+        cdrag.plugins = cdrag
+            .load_obj(CacheFile::Plugins)
+            .unwrap_or(cdrag.fetch_plugins().await?);
+        cdrag.champions = cdrag
+            .load_obj(CacheFile::Champions)
+            .unwrap_or(cdrag.fetch_all_champions().await?);
+        Ok(cdrag)
+    }
+
+    pub fn champion_by_name<'a, N: Into<String> + Copy>(&'a self, name: N) -> Option<&'a Champion> {
+        self.champions
+            .iter()
+            .find(|champ| champ.1.name == name.into())
+            .map(|champ| champ.1)
     }
 
     pub fn clean_up(&self) -> anyhow::Result<()> {
@@ -60,7 +92,7 @@ impl CDragon {
     }
 
     async fn cached_plugin_updated_date(&self, name: &PluginName) -> Option<DateTime<Utc>> {
-        let plugins: Result<Vec<Plugin>, anyhow::Error> = self.load_obj("plugins.json");
+        let plugins: Result<Vec<Plugin>, anyhow::Error> = self.load_obj(CacheFile::Plugins);
         plugins.map_or(None, |plugs| {
             plugs
                 .iter()
@@ -104,7 +136,7 @@ impl CDragon {
     /// let champions = cdrag.champions().await.unwrap();
     /// let _ = cdrag.save(&champions, "champions.json");
     /// ```
-    fn save(&self, obj: &impl Serialize, file_name: impl Into<String>) -> anyhow::Result<()> {
+    fn save(&self, obj: &impl Serialize, cache_file: CacheFile) -> anyhow::Result<()> {
         let ser = serde_json::to_string_pretty(obj)?;
         let mut file_path = self.cache_dir.clone();
         if file_path.try_exists().is_err()
@@ -112,7 +144,7 @@ impl CDragon {
         {
             create_dir_all(&file_path)?;
         }
-        file_path.push(file_name.into());
+        file_path.push(cache_file.to_string());
         fs::write(file_path, ser)?;
         Ok(())
     }
@@ -127,14 +159,14 @@ impl CDragon {
     /// use cdragon::CDragon;
     ///
     /// let cdrag = CDragon::new().unwrap();
-    /// let champions = cdrag.load("champions.json").unwrap();
+    /// let champions = cdrag.load(CacheFile::Champions).unwrap();
     /// ```
-    pub fn load_obj<T>(&self, file_name: impl Into<String>) -> anyhow::Result<T>
+    fn load_obj<T>(&self, cache_file: CacheFile) -> anyhow::Result<T>
     where
         for<'a> T: Deserialize<'a>,
     {
         let mut file_path = self.cache_dir.clone();
-        file_path.push(file_name.into());
+        file_path.push(cache_file.to_string());
         let file = File::open(file_path)?;
         let reader = BufReader::new(file);
         let obj = serde_json::from_reader(reader)?;
@@ -150,18 +182,18 @@ impl CDragon {
     ///
     pub async fn update(&mut self) -> anyhow::Result<()> {
         let plugins = self
-            .plugins()
+            .fetch_plugins()
             .await
             .with_context(|| "failed to update plugins")?;
-        self.save(&plugins, "plugins.json")
+        self.save(&plugins, CacheFile::Plugins)
             .with_context(|| "failed to cache the updated plugins")?;
         self.plugins = plugins;
 
         let champions = self
-            .all_champions()
+            .fetch_all_champions()
             .await
             .with_context(|| "failed to update champions")?;
-        self.save(&champions, "champion_details.json")
+        self.save(&champions, CacheFile::Champions)
             .with_context(|| "failed to cache the updated champions")?;
         self.champions = champions;
 
@@ -170,7 +202,7 @@ impl CDragon {
     }
 
     /// Fetches the latest [`Plugin`]s from the CDragon API
-    pub async fn plugins(&self) -> anyhow::Result<Vec<Plugin>> {
+    pub async fn fetch_plugins(&self) -> anyhow::Result<Vec<Plugin>> {
         let res = self
             .http_client
             .get(format!(
@@ -584,6 +616,14 @@ mod test {
         let data_exists = cdrag.data_dir.try_exists().unwrap_or(false);
         assert!(!data_exists);
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn get_akshan() -> anyhow::Result<()> {
+        let cdrag = CDragon::new().await?;
+        let akshan = cdrag.champion_by_name("Akshan");
+        assert!(akshan.is_some_and(|ak| ak.id == 166));
         Ok(())
     }
 }
