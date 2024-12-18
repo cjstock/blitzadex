@@ -1,13 +1,16 @@
 use std::{
     collections::HashMap,
+    fmt::Display,
     fs::{self, create_dir_all, File},
-    io::BufReader,
-    path::PathBuf,
+    io::{self, BufReader},
+    path::{Path, PathBuf},
+    str::FromStr,
     u64,
 };
 
 use anyhow::{anyhow, Context};
 use chrono::{DateTime, Utc};
+use reqwest::Url;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use strum::Display;
@@ -26,18 +29,19 @@ pub enum Status {
     UpToDate,
 }
 
-#[derive(Debug, Display)]
+#[derive(Debug)]
 enum CacheFile {
     Plugins,
     Champions,
 }
 
-impl Into<String> for CacheFile {
-    fn into(self) -> String {
-        match self {
-            Self::Plugins => "plugins.json".to_string(),
-            Self::Champions => "champions.json".to_string(),
-        }
+impl Display for CacheFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Self::Plugins => "plugins.json",
+            Self::Champions => "champions.json",
+        };
+        f.write_str(s)
     }
 }
 
@@ -136,7 +140,7 @@ impl CDragon {
     /// let champions = cdrag.champions().await.unwrap();
     /// let _ = cdrag.save(&champions, "champions.json");
     /// ```
-    fn save(&self, obj: &impl Serialize, cache_file: CacheFile) -> anyhow::Result<()> {
+    fn cache_obj(&self, obj: &impl Serialize, cache_file: CacheFile) -> anyhow::Result<()> {
         let ser = serde_json::to_string_pretty(obj)?;
         let mut file_path = self.cache_dir.clone();
         if file_path.try_exists().is_err()
@@ -185,7 +189,7 @@ impl CDragon {
             .fetch_plugins()
             .await
             .with_context(|| "failed to update plugins")?;
-        self.save(&plugins, CacheFile::Plugins)
+        self.cache_obj(&plugins, CacheFile::Plugins)
             .with_context(|| "failed to cache the updated plugins")?;
         self.plugins = plugins;
 
@@ -193,7 +197,7 @@ impl CDragon {
             .fetch_all_champions()
             .await
             .with_context(|| "failed to update champions")?;
-        self.save(&champions, CacheFile::Champions)
+        self.cache_obj(&champions, CacheFile::Champions)
             .with_context(|| "failed to cache the updated champions")?;
         self.champions = champions;
 
@@ -295,6 +299,34 @@ impl CDragon {
         }
         Ok(champions)
     }
+
+    pub async fn download_skin_asset(&self, skin: &Skin, asset: &SkinAsset) -> anyhow::Result<()> {
+        let asset_path = match asset {
+            SkinAsset::Tile => &skin.tile_path,
+            SkinAsset::Splash => &skin.splash_path,
+            SkinAsset::LoadScreen => &skin.load_screen_path,
+            SkinAsset::UncenteredSplash => &skin.uncentered_splash_path,
+        };
+        let asset_url = format!("{GAME_DATA_URL}/{asset_path}");
+        dbg!(&asset_url);
+        let bytes = self
+            .http_client
+            .get(asset_url)
+            .send()
+            .await
+            .with_context(|| "couldn't download asset")?
+            .bytes()
+            .await?;
+        let file_path = self.data_dir.join(asset_path);
+        let mut file_dir = file_path.clone();
+        dbg!(&file_dir);
+        file_dir.pop();
+        dbg!(&file_dir);
+        create_dir_all(&file_dir)?;
+        let mut file = File::create(file_path).with_context(|| "couldn't create skin file")?;
+        io::copy(&mut bytes.as_ref(), &mut file).with_context(|| "couldn't copy bytes")?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -389,6 +421,13 @@ pub struct Skin {
     #[serde(deserialize_with = "deserialize_skin_lines")]
     skin_lines: Vec<u64>,
     description: Option<String>,
+}
+
+pub enum SkinAsset {
+    Splash,
+    UncenteredSplash,
+    Tile,
+    LoadScreen,
 }
 
 fn deserialize_asset_path<'de, D>(deserializer: D) -> Result<String, D::Error>
@@ -624,6 +663,28 @@ mod test {
         let cdrag = CDragon::new().await?;
         let akshan = cdrag.champion_by_name("Akshan");
         assert!(akshan.is_some_and(|ak| ak.id == 166));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn download_akshan_base_tile() -> anyhow::Result<()> {
+        let cdrag = CDragon::new().await?;
+        let akshan = cdrag.champion_by_name("Akshan").unwrap();
+        let base_skin = akshan.skins.iter().find(|skin| skin.is_base).unwrap();
+        cdrag
+            .download_skin_asset(base_skin, &SkinAsset::Tile)
+            .await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn download_akshan_base_uncentered() -> anyhow::Result<()> {
+        let cdrag = CDragon::new().await?;
+        let akshan = cdrag.champion_by_name("Akshan").unwrap();
+        let base_skin = akshan.skins.iter().find(|skin| skin.is_base).unwrap();
+        cdrag
+            .download_skin_asset(base_skin, &SkinAsset::UncenteredSplash)
+            .await?;
         Ok(())
     }
 }
