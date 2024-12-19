@@ -3,14 +3,12 @@ use std::{
     fmt::Display,
     fs::{self, create_dir_all, File},
     io::{self, BufReader},
-    path::{Path, PathBuf},
-    str::FromStr,
+    path::PathBuf,
     u64,
 };
 
 use anyhow::{anyhow, Context};
 use chrono::{DateTime, Utc};
-use reqwest::Url;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use strum::Display;
