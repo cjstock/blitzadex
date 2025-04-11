@@ -306,7 +306,6 @@ impl CDragon {
             SkinAsset::UncenteredSplash => &skin.uncentered_splash_path,
         };
         let asset_url = format!("{GAME_DATA_URL}/{asset_path}");
-        dbg!(&asset_url);
         let bytes = self
             .http_client
             .get(asset_url)
@@ -317,9 +316,7 @@ impl CDragon {
             .await?;
         let file_path = self.data_dir.join(asset_path);
         let mut file_dir = file_path.clone();
-        dbg!(&file_dir);
         file_dir.pop();
-        dbg!(&file_dir);
         create_dir_all(&file_dir)?;
         let mut file = File::create(file_path).with_context(|| "couldn't create skin file")?;
         io::copy(&mut bytes.as_ref(), &mut file).with_context(|| "couldn't copy bytes")?;
@@ -622,7 +619,7 @@ mod test {
         let one_year_ago = Local::now().with_year(2023).unwrap();
         let updated_since_a_year_ago = champs_plugin.updated_since(one_year_ago.into());
         assert!(updated_since_a_year_ago);
-        let one_year_from_now = Local::now().with_year(2025).unwrap();
+        let one_year_from_now = Local::now().with_year(2026).unwrap();
         let updated_since_one_year_from_now = champs_plugin.updated_since(one_year_from_now.into());
         assert!(!updated_since_one_year_from_now);
         Ok(())
