@@ -1,15 +1,11 @@
 mod cdragon;
 
 use cdragon::{CDragon, PluginName};
+use color_eyre::eyre::Result;
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let mut cdrag = CDragon::new().await?;
-    let status = cdrag.status(PluginName::RcpBeLolGameData).await?;
-    dbg!(status);
+async fn main() -> color_eyre::Result<()> {
+    color_eyre::install()?;
 
-    let _ = cdrag.update().await?;
-    let status = cdrag.status(PluginName::RcpBeLolGameData).await?;
-    dbg!(status);
     Ok(())
 }

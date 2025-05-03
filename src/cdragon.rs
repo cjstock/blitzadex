@@ -7,8 +7,11 @@ use std::{
     u64,
 };
 
-use anyhow::{anyhow, Context};
 use chrono::{DateTime, Utc};
+use color_eyre::{
+    eyre::{eyre, Context, ContextCompat},
+    Result,
+};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use strum::Display;
@@ -55,7 +58,7 @@ pub struct CDragon {
 }
 
 impl CDragon {
-    pub async fn new() -> anyhow::Result<Self> {
+    pub async fn new() -> color_eyre::Result<Self> {
         let proj_dirs = directories::ProjectDirs::from("", "", "blitzadex")
             .with_context(|| "failed to find the project directory")
             .unwrap();
@@ -86,7 +89,7 @@ impl CDragon {
             .map(|champ| champ.1)
     }
 
-    pub fn clean_up(&self) -> anyhow::Result<()> {
+    pub fn clean_up(&self) -> color_eyre::Result<()> {
         fs::remove_dir_all(&self.cache_dir).ok();
         fs::remove_dir_all(&self.data_dir).ok();
         fs::remove_dir_all(&self.config_dir).ok();
@@ -94,7 +97,8 @@ impl CDragon {
     }
 
     async fn cached_plugin_updated_date(&self, name: &PluginName) -> Option<DateTime<Utc>> {
-        let plugins: Result<Vec<Plugin>, anyhow::Error> = self.load_obj(CacheFile::Plugins);
+        let plugins: Result<Vec<Plugin>, color_eyre::eyre::Error> =
+            self.load_obj(CacheFile::Plugins);
         plugins.map_or(None, |plugs| {
             plugs
                 .iter()
@@ -103,7 +107,7 @@ impl CDragon {
         })
     }
 
-    pub async fn status(&self, plugin_name: PluginName) -> anyhow::Result<Status> {
+    pub async fn status(&self, plugin_name: PluginName) -> color_eyre::Result<Status> {
         let cached = self.cached_plugin_updated_date(&plugin_name).await;
         match cached {
             None => Ok(Status::OutOfDate),
@@ -112,7 +116,7 @@ impl CDragon {
                     .network_plugin_updated_date(&plugin_name)
                     .await
                     .map_err(|e| {
-                        anyhow!("failed to check when {plugin_name} was last updated: {e}")
+                        eyre!("failed to check when {plugin_name} was last updated: {e}")
                     })?;
                 if cached_date < fetched {
                     return Ok(Status::OutOfDate);
@@ -138,7 +142,7 @@ impl CDragon {
     /// let champions = cdrag.champions().await.unwrap();
     /// let _ = cdrag.save(&champions, "champions.json");
     /// ```
-    fn cache_obj(&self, obj: &impl Serialize, cache_file: CacheFile) -> anyhow::Result<()> {
+    fn cache_obj(&self, obj: &impl Serialize, cache_file: CacheFile) -> color_eyre::Result<()> {
         let ser = serde_json::to_string_pretty(obj)?;
         let mut file_path = self.cache_dir.clone();
         if file_path.try_exists().is_err()
@@ -163,7 +167,7 @@ impl CDragon {
     /// let cdrag = CDragon::new().unwrap();
     /// let champions = cdrag.load(CacheFile::Champions).unwrap();
     /// ```
-    fn load_obj<T>(&self, cache_file: CacheFile) -> anyhow::Result<T>
+    fn load_obj<T>(&self, cache_file: CacheFile) -> color_eyre::Result<T>
     where
         for<'a> T: Deserialize<'a>,
     {
@@ -182,7 +186,7 @@ impl CDragon {
     /// only the [`Plugin`]s and [`Champion`]s are stored.
     ///
     ///
-    pub async fn update(&mut self) -> anyhow::Result<()> {
+    pub async fn update(&mut self) -> color_eyre::Result<()> {
         let plugins = self
             .fetch_plugins()
             .await
@@ -204,7 +208,7 @@ impl CDragon {
     }
 
     /// Fetches the latest [`Plugin`]s from the CDragon API
-    pub async fn fetch_plugins(&self) -> anyhow::Result<Vec<Plugin>> {
+    pub async fn fetch_plugins(&self) -> color_eyre::Result<Vec<Plugin>> {
         let res = self
             .http_client
             .get(format!(
@@ -225,7 +229,7 @@ impl CDragon {
     pub async fn network_plugin_updated_date(
         &self,
         name: &PluginName,
-    ) -> anyhow::Result<DateTime<Utc>> {
+    ) -> color_eyre::Result<DateTime<Utc>> {
         let plugins = self.fetch_plugins().await?;
         plugins
             .iter()
@@ -236,10 +240,10 @@ impl CDragon {
                     None
                 }
             })
-            .ok_or(anyhow!("couldn't find the when {name:?} was last updated"))
+            .ok_or(eyre!("couldn't find the when {name:?} was last updated"))
     }
 
-    pub async fn fetch_champion_ids(&self) -> anyhow::Result<Vec<u64>> {
+    pub async fn fetch_champion_ids(&self) -> color_eyre::Result<Vec<u64>> {
         let res = self
             .http_client
             .get(format!("{GAME_DATA_URL}/{V1}/champion-summary.json"))
@@ -256,7 +260,7 @@ impl CDragon {
         Ok(champ_ids)
     }
 
-    pub async fn fetch_champion(&self, id: u64) -> anyhow::Result<Champion> {
+    pub async fn fetch_champion(&self, id: u64) -> color_eyre::Result<Champion> {
         let res = self
             .http_client
             .get(format!("{GAME_DATA_URL}/{V1}/champions/{id}.json"))
@@ -271,7 +275,7 @@ impl CDragon {
     async fn fetch_champion_parallel(
         http_client: reqwest::Client,
         id: u64,
-    ) -> anyhow::Result<Champion> {
+    ) -> color_eyre::Result<Champion> {
         let res = http_client
             .get(format!("{GAME_DATA_URL}/{V1}/champions/{id}.json"))
             .send()
@@ -282,7 +286,7 @@ impl CDragon {
         Ok(champion)
     }
 
-    pub async fn fetch_all_champions(&self) -> anyhow::Result<HashMap<u64, Champion>> {
+    pub async fn fetch_all_champions(&self) -> color_eyre::Result<HashMap<u64, Champion>> {
         let champ_ids = self.fetch_champion_ids().await?;
         let mut tasks: Vec<JoinHandle<_>> = Vec::with_capacity(champ_ids.len());
         for id in champ_ids {
@@ -298,14 +302,13 @@ impl CDragon {
         Ok(champions)
     }
 
-    pub async fn download_skin_asset(&self, skin: &Skin, asset: &SkinAsset) -> anyhow::Result<()> {
-        let asset_path = match asset {
-            SkinAsset::Tile => &skin.tile_path,
-            SkinAsset::Splash => &skin.splash_path,
-            SkinAsset::LoadScreen => &skin.load_screen_path,
-            SkinAsset::UncenteredSplash => &skin.uncentered_splash_path,
-        };
-        let asset_url = format!("{GAME_DATA_URL}/{asset_path}");
+    pub async fn download_skin_asset(
+        &self,
+        skin: &Skin,
+        asset: &SkinAsset,
+    ) -> color_eyre::Result<()> {
+        let asset_path = self.skin_path_of(skin, asset)?;
+        let asset_url = format!("{GAME_DATA_URL}/{}", asset_path.to_str().unwrap());
         let bytes = self
             .http_client
             .get(asset_url)
@@ -321,6 +324,16 @@ impl CDragon {
         let mut file = File::create(file_path).with_context(|| "couldn't create skin file")?;
         io::copy(&mut bytes.as_ref(), &mut file).with_context(|| "couldn't copy bytes")?;
         Ok(())
+    }
+
+    pub fn skin_path_of(&self, skin: &Skin, asset: &SkinAsset) -> color_eyre::Result<PathBuf> {
+        let asset_path = match asset {
+            SkinAsset::Tile => &skin.tile_path,
+            SkinAsset::Splash => &skin.splash_path,
+            SkinAsset::LoadScreen => &skin.load_screen_path,
+            SkinAsset::UncenteredSplash => &skin.uncentered_splash_path,
+        };
+        Ok(asset_path.into())
     }
 }
 
@@ -587,6 +600,7 @@ mod mtime_format {
 mod test {
     use super::*;
     use chrono::{Datelike, Local};
+    use rstest::*;
 
     #[tokio::test]
     async fn get_plugs() {
@@ -610,7 +624,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn champs_out_of_date() -> anyhow::Result<()> {
+    async fn champs_out_of_date() -> color_eyre::Result<()> {
         let plugins = CDragon::default().fetch_plugins().await?;
         let champs_plugin = plugins
             .iter()
@@ -625,24 +639,39 @@ mod test {
         Ok(())
     }
 
+    #[fixture]
+    async fn cdrag_instance() -> color_eyre::Result<CDragon> {
+        CDragon::new().await
+    }
+
+    #[rstest]
     #[tokio::test]
-    async fn all_champs() -> anyhow::Result<()> {
-        let champions = CDragon::default().fetch_all_champions().await?;
-        assert!(champions.len() > 0);
+    async fn all_champs(
+        #[future] cdrag_instance: color_eyre::Result<CDragon>,
+    ) -> color_eyre::Result<()> {
+        let cdrag = cdrag_instance.await?;
+        assert!(cdrag.champions.len() > 0);
         Ok(())
     }
 
+    #[rstest]
     #[tokio::test]
-    async fn update() -> anyhow::Result<()> {
-        let mut cdrag = CDragon::new().await?;
+    async fn update(
+        #[future] cdrag_instance: color_eyre::Result<CDragon>,
+    ) -> color_eyre::Result<()> {
+        let mut cdrag = cdrag_instance.await?;
         cdrag.update().await?;
         Ok(())
     }
 
+    #[rstest]
     #[tokio::test]
-    async fn cleanup() -> anyhow::Result<()> {
-        let cdrag = CDragon::new().await?;
+    async fn cleanup(
+        #[future] cdrag_instance: color_eyre::Result<CDragon>,
+    ) -> color_eyre::Result<()> {
+        let cdrag = cdrag_instance.await?;
         cdrag.clean_up()?;
+
         let cache_exists = cdrag.cache_dir.try_exists().unwrap_or(false);
         assert!(!cache_exists);
         let config_exists = cdrag.config_dir.try_exists().unwrap_or(false);
@@ -653,17 +682,23 @@ mod test {
         Ok(())
     }
 
+    #[rstest]
     #[tokio::test]
-    async fn get_akshan() -> anyhow::Result<()> {
-        let cdrag = CDragon::new().await?;
+    async fn get_akshan(
+        #[future] cdrag_instance: color_eyre::Result<CDragon>,
+    ) -> color_eyre::Result<()> {
+        let cdrag = cdrag_instance.await?;
         let akshan = cdrag.champion_by_name("Akshan");
         assert!(akshan.is_some_and(|ak| ak.id == 166));
         Ok(())
     }
 
+    #[rstest]
     #[tokio::test]
-    async fn download_akshan_base_tile() -> anyhow::Result<()> {
-        let cdrag = CDragon::new().await?;
+    async fn download_akshan_base_tile(
+        #[future] cdrag_instance: color_eyre::Result<CDragon>,
+    ) -> color_eyre::Result<()> {
+        let cdrag = cdrag_instance.await?;
         let akshan = cdrag.champion_by_name("Akshan").unwrap();
         let base_skin = akshan.skins.iter().find(|skin| skin.is_base).unwrap();
         cdrag
@@ -672,9 +707,12 @@ mod test {
         Ok(())
     }
 
+    #[rstest]
     #[tokio::test]
-    async fn download_akshan_base_uncentered() -> anyhow::Result<()> {
-        let cdrag = CDragon::new().await?;
+    async fn download_akshan_base_uncentered(
+        #[future] cdrag_instance: color_eyre::Result<CDragon>,
+    ) -> color_eyre::Result<()> {
+        let cdrag = cdrag_instance.await?;
         let akshan = cdrag.champion_by_name("Akshan").unwrap();
         let base_skin = akshan.skins.iter().find(|skin| skin.is_base).unwrap();
         cdrag
